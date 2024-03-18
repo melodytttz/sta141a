@@ -1,0 +1,354 @@
+---
+title: "Final Project: Predictive Modeling of Mice Neural Activity in Response to Visual Stimuli"
+author: "Tong Zhu"
+date: "2024-03-18"
+output: html_document
+---
+
+```{r echo=FALSE,include=FALSE}
+#set up for the project
+#load library
+library(ggplot2)
+```
+
+# Abstract
+This report started with an analysis of mice's neural response to different 
+visual stimuli based on the dataset by Steinmetz et al. (2019). Then it aims 
+to integrate mice's decision-making process and train a model to predict the 
+outcome of mice's decision given a random dataset selected from the same 
+experiment.  Through the integration of data, this report tries to identify the 
+distribution of the data across sessions and trials, exploring the variation in 
+neural responses and trial results(correctness of response). After finding the 
+shared neural patterns across sessions, the predicted model is trained and can 
+be used to evaluate test sets randomly selected from distinct sessions. The 
+outcomes of this research enhanced our understanding of the relationship between 
+decision-making and neural activity.
+
+# I. Introduction
+The experiments were performed on a total of 10 mice over 39 
+sessions, this report uses 4 mice over 18 sessions as a dataset, focusing on 
+the contrast levels of stimuli presented and neural activity from each trial.The 
+prediction model will be trained and selected by the performance of result. The 
+test data set will be evaluated on two test sets of 100 trials randomly selected 
+from Session 1 and Session 18, respectively. 
+
+# II. Exploratory analysis
+
+### Describe the data structures across sessions
+After processing through each trial from each session, we can observe that there
+are 6 variables for each trial, namely:
+*feedback_type*: type of the feedback, 1 for success and -1 for failure,
+*contrast_left*: contrast of the left stimulus(0, 0.25, 0.5, 1),
+*contrast_right*: contrast of the right stimulus(0, 0.25, 0.5, 1),
+*time*: centers of the time bins for spks,
+*spks*: numbers of spikes of neurons in the visual cortex in time bins,
+*brain_area*: area of the brain where each neuron lives.
+
+There are 4 distinct mice recorded in the dataset, named Cori(session1-3), 
+Forssmann(session4-7), Hench(session8-11), and Lederberg(session12-18).
+A bar plot of overall correctness across session is as follows, from the bar 
+plot, we can observe that some of the session have higher corretness,we can do 
+further integration on these trials.
+
+
+
+```{r echo=FALSE,warning=FALSE,message=TRUE}
+#load data
+session <- list()
+for (i in 1:18) 
+  {
+  filepath <- file.path("E:/study/DAVIS/Winter2024/sta141A/final project/Data/session", paste('session', i, '.rds', sep = ''))
+  session[[i]] <- readRDS(filepath)
+}
+
+#create a data frame for session summaries
+sessions_summary <- data.frame(
+  Session = integer(),
+  Number_of_Trials = integer(),
+  Proportion_Success = numeric(),
+  Proportion_Failure = numeric(),
+  Mean_Stimuli_Left = numeric(),
+  Mean_Stimuli_Right = numeric(),
+  stringsAsFactors = FALSE
+)
+
+#go through each session
+for (i in seq_along(session)) {
+  current_session <- session[[i]]
+  
+  #create vectors to store success and failure data
+  success_per_trial <- numeric()
+  failure_per_trial <- numeric()
+  stimuli_left <- numeric()
+  stimuli_right <- numeric()
+
+  #go through each trial within session
+  for (j in seq_along(current_session$spks)) {
+    #append success and failure data
+    success_per_trial[j] <- mean(current_session$feedback_type[[j]] == 1)
+    failure_per_trial[j] <- mean(current_session$feedback_type[[j]] == -1)
+    
+    # Combine all stimulus levels across all trials
+    stimuli_left <- c(stimuli_left, current_session$contrast_left[[j]])
+    stimuli_right <- c(stimuli_right, current_session$contrast_right[[j]])
+  }
+
+  #summary for each session
+  session_summary <- data.frame(
+    Session = i,
+    Number_of_Trials = length(current_session$spks),
+    Proportion_Success = mean(success_per_trial),
+    Proportion_Failure = mean(failure_per_trial),
+    Mean_Stimuli_Left = mean(stimuli_left, na.rm = TRUE),
+    Mean_Stimuli_Right = mean(stimuli_right, na.rm = TRUE)
+  )
+  
+  #add current session summery to overall summary
+  sessions_summary <- rbind(sessions_summary, session_summary)
+}
+```
+
+```{r echo=FALSE,warning=FALSE,message=TRUE}
+#bar plot correctness vs session
+barplot(sessions_summary$Proportion_Success,
+        names.arg=paste('Session', sessions_summary$Session),
+        xlab='Session',
+        ylab='Correctness (Proportion Success)',
+        main='Correctness by Session',
+        col='lightblue',
+        ylim=c(0, 1))
+
+#add success rate above each bar
+text(x = barplot(sessions_summary$Proportion_Success, plot=FALSE), 
+     y = sessions_summary$Proportion_Success + 0.02, 
+     label = round(sessions_summary$Proportion_Success, 2),
+     cex = 0.7,
+     pos = 3)
+```
+
+From the plot, we can see that all 4 mice is doing better than expected(0.5), 
+Lederberg has an outstanding performance comparing to other mice.Session 11,13,
+17,18 have higher correctness rate, these session may worth further analyze. 
+
+
+```{r echo=FALSE,include=TRUE}
+#extract all brain area data
+all_brain_areas <- unlist(lapply(session, function(s) unlist(s$brain_area)))
+
+#count the frequency of each brain area
+brain_area_counts <- table(all_brain_areas)
+
+#sort and find the most common brain areas
+sorted_brain_area_counts <- sort(brain_area_counts, decreasing = TRUE)
+
+#bar plot
+top_n <- 10 
+barplot(sorted_brain_area_counts[1:top_n], las=2, main="Most Common Used Brain Areas",
+        xlab="Brain Areas", ylab="Counts", col="lightblue", cex.names=0.7)
+
+```
+
+### Neuron activity
+We want to know about neuron activity in each trial so we extract spikes and 
+time from single trials and create raster plot.
+
+```{r echo=FALSE,include=TRUE}
+plot_neural_activity <- function(spikes, time, trial_index) {
+  trial_spikes <- spikes[[trial_index]]
+  num_neurons <- nrow(trial_spikes)
+  
+  #extract the time vector
+  trial_time <- time[[trial_index]]
+  
+  #raster plot
+  plot(NULL, NULL, type = 'n', xlim = c(min(trial_time), max(trial_time)), ylim = c(0, num_neurons),
+       xlab = 'Time (s)', ylab = 'Neuron Index', main = paste('Neural Activity'))
+  
+  #plot spikes for each neuron
+  for (neuron_index in 1:num_neurons) {
+    spikes_times <- trial_time[trial_spikes[neuron_index, ] > 0]
+    if (length(spikes_times) > 0) {
+      points(spikes_times, rep(neuron_index, length(spikes_times)), pch = '|')
+    }
+  }
+}
+
+plot_neural_activity(session[[7]]$spks, session[[7]]$time, 20)
+plot_neural_activity(session[[18]]$spks, session[[18]]$time, 1)
+```
+
+From above plot, session 7,trial 20 and session 18 trial 1 is randomly choose 
+to see the raster plot of neuron and time. The same function can be called for 
+all trials across sessions. From the plot, we can see directly how the neurons 
+active over time during the trial. 
+
+### Explore changes over trials
+We use heat map as the method to explore changes over trials with in sessions. 
+18 heat maps are created corresponding each session.Each row in a heat map 
+corresponds to a single trial, while each column represents a time bin within 
+that trial. The color intensity reflects the normalized spike rate, with warmer 
+colors indicating higher levels of neural firing.
+
+```{r echo=FALSE,include=FALSE}
+plot_activity_heatmap <- function(spks, num_trials_to_plot=NULL) {
+  if (is.null(num_trials_to_plot)) {
+    num_trials_to_plot <- length(spks)
+  }
+
+  #empty matrix to store aggregated spike data 
+  spike_matrix <- matrix(nrow = num_trials_to_plot, ncol = 40)
+  
+  #loop all trials and record in the spike matrix
+  for (i in 1:num_trials_to_plot) {
+    spike_matrix[i, ] <- colSums(spks[[i]])
+  }
+  spike_matrix <- spike_matrix / max(spike_matrix)
+  nr <- nrow(spike_matrix)
+  nc <- ncol(spike_matrix)
+
+  #plot the heat map
+  image(x = 1:nc, y = 1:nr, z = t(spike_matrix)[, nr:1], 
+        xlab = 'Time Bins', ylab = 'Trials', main = 'Neural Activity Across Trials',
+        axes = FALSE)
+}
+
+# Plot the heat map for every session
+for (i in (1:18))
+{
+  plot_activity_heatmap(session[[i]]$spks)
+}
+
+```
+In examining all heat maps, we notice several recurring patterns: There are 
+periods of heightened activity that appear consistently across trials, 
+indicating that the neurons are responsive to the visual task given.
+Session 17 has the highest correctness rate from the previous data exploration, 
+and session 11 has a relatively high correctness rate but we think the pattern 
+is worth analyze, hence we attach the heat map of session 11 and session 17 as 
+follows, we can see a obvious pattern that a large proportion of trials have a 
+similarity in time bins which indicates consistent neural responses to the 
+experimental conditions.
+
+```{r echo=FALSE,include=TRUE}
+plot_activity_heatmap(session[[11]]$spks)
+plot_activity_heatmap(session[[17]]$spks)
+```
+
+### Explore homogeneity and heterogeneity across sessions and mice.
+We are trying to explore homogeneity and heterogeneity across sessions and mice
+by calculating the variance of total spikes within each session and mean total 
+spikes per session for each mouse. The plots are as follows:
+
+```{r echo=FALSE,include=TRUE}
+#get the total spikes per trial/per session
+total_spikes_per_session <- lapply(session, function(s) {
+  unlist(lapply(s$spks, function(trial) sum(trial)))
+})
+
+#variance of total spikes for each session
+variance_per_session <- sapply(total_spikes_per_session, var)
+
+#plot the variance
+barplot(variance_per_session, names.arg=paste('Session', seq_along(variance_per_session)),
+        xlab='Session', ylab='Variance of Total Spikes', main='Variance of Total Spikes Within Each Session')
+```
+
+
+A higher variance in total spike count indicates a substantial variation in the 
+number of spikes from trial to trial within those sessions. This may caused by 
+control factors, differences in mouse, and variability in neural responses. A 
+lower variance suggesting a more consistent neural response across trials.
+
+```{r echo=FALSE,include=TRUE}
+#vector with the mouse name
+mouse_names <- c(rep("Cori", 3), rep("Forssmann", 4), rep("Hench", 4), rep("Lederberg", 7))
+
+#vector total spikes
+total_spikes_vector <- unlist(total_spikes_per_session)
+
+#mouse name for each trial
+mouse_factors <- rep(mouse_names, sapply(total_spikes_per_session, length))
+
+#mean total spikes per session for each mouse
+mean_spikes_per_mouse <- tapply(total_spikes_vector, mouse_factors, mean)
+
+#plot
+barplot(mean_spikes_per_mouse, names.arg = names(mean_spikes_per_mouse),
+        xlab = 'Mouse', ylab = 'Mean Total Spikes', main = 'Mean Total Spikes Per Session for Each Mouse')
+
+```
+
+The mean total spikes appear to be relatively consistent across mice, with only 
+slight variations between them.Forssmann and Lederberg has a slightly lower mean 
+total spikes.This may be caused by individual differences between mice, such as 
+decision-making processing, and learning speed throughout the experiment.
+
+# III. Data integration
+Extract the shared patters across sessions and address the differences between 
+sessions.The training data for performing PCA is previewed as follows. 
+```{r echo=FALSE,include=TRUE}
+#prepare training data
+training_data_list <- lapply(1:length(session), function(i) {
+  data <- session[[i]]
+  mouse_name_vector <- rep(data$mouse_name, times = length(data$feedback_type))
+  session_id_vector <- rep(i, times = length(data$feedback_type))
+  contrast_left_vector <- data$contrast_left
+  contrast_right_vector <- data$contrast_right
+  contrast_diff_vector <- contrast_left_vector - contrast_right_vector
+  feedback_type_vector <- data$feedback_type
+  
+  #total spikes per trial
+  total_spikes_vector <- sapply(data$spks, function(trial_matrix) sum(trial_matrix))
+
+  #data frame
+  data_frame <- data.frame(
+    MouseName = mouse_name_vector,
+    SessionID = session_id_vector,
+    ContrastLeft = contrast_left_vector,
+    ContrastRight = contrast_right_vector,
+    ContrastDiff = contrast_diff_vector,
+    TotalSpikes = total_spikes_vector,
+    FeedbackType = feedback_type_vector
+  )
+  return(data_frame)
+})
+
+#combine train data
+training_tibble <- do.call(rbind, training_data_list)
+
+#head of training data
+head(training_tibble)
+```
+Next, we perform the PCA to see if what pattern is shared across sessions. 
+
+
+
+
+# IV. Predictive modeling
+```{r echo=FALSE,include=TRUE}
+#read test data
+set.seed(123)
+test1 <- readRDS("E:/study/DAVIS/Winter2024/sta141A/final project/Data/test_data/test1.rds")
+test2 <- readRDS("E:/study/DAVIS/Winter2024/sta141A/final project/Data/test_data/test2.rds")
+
+
+#predictions on the test sets
+#predictions_test1 <- predict(model, test1)
+#predictions_test2 <- predict(model, test2)
+
+#evaluate
+#confusionMatrix(predictions_test1, test1$FeedbackType)
+#confusionMatrix(predictions_test2, test2$FeedbackType)
+```
+
+# V. Prediction performance on the test sets
+fail in establish prediction model leads to fail in predict of test sets.
+# VI. Discussion
+# Reference
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
+
+# Use of online source
+This report uses chatgpt for brain storming and grammar check. Use Stack 
+overflow to check use of r commands and use of prediction models. 
+
+
